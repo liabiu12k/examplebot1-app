@@ -1,7 +1,7 @@
 #Inicio de conexion al bot de telegram 
 import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler,filters, ContextTypes
 # Preguntas y respuestas (por categoria)
 
 categories = {
@@ -162,106 +162,123 @@ categories = {
         },
     ]
 }
-# --- Función para iniciar el examen. Se ejecuta cuando el usuario envía /start ---
+# --- Función para iniciar el examen ---
 async def start_exam(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Crea un teclado con botones para cada categoría.
-    keyboard = [[InlineKeyboardButton(category, callback_data=f"category-{category}")] for category in categories]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    # Envía un mensaje de bienvenida al usuario con el teclado de categorías.
-    await update.message.reply_text(
-        "👋 ¡Bienvenido al examen interactivo!\nSelecciona una categoría para comenzar:",
-        reply_markup=reply_markup,
-    )
+    # Verifica si el usuario accedió mediante el enlace con el parámetro correcto.
+    if context.args and context.args[0] == "acceso":
+        # Crea un teclado con botones para cada categoría.
+        keyboard = [[InlineKeyboardButton(category, callback_data=f"category-{category}")] for category in categories]
+        reply_markup = InlineKeyboardMarkup(keyboard)  # Configura el teclado con las categorías.
+        
+        # Envía el mensaje inicial con el teclado de categorías.
+        await update.message.reply_text(
+            "👋 ¡Bienvenido al examen interactivo!\nSelecciona una categoría para comenzar:",
+            reply_markup=reply_markup,
+        )
+    else:
+        # Si no se accede con el parámetro correcto, niega el acceso.
+        await update.message.reply_text(
+            "⚠️ Acceso denegado. Solo los usuarios con el enlace de acceso pueden utilizar este bot."
+        )
 
-# --- Función que maneja la selección de categoría por el usuario ---
+# --- Función que maneja la selección de categoría ---
 async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()  # Acusa recibo de la selección de categoría.
+    query = update.callback_query  # Obtiene la consulta del usuario.
+    await query.answer()  # Confirma al usuario que su interacción ha sido recibida.
 
-    category_name = query.data.split("-")[1]  # Extrae el nombre de la categoría.
+    # Extrae el nombre de la categoría seleccionada del callback_data.
+    category_name = query.data.split("-")[1]
     context.user_data["category"] = category_name  # Guarda la categoría seleccionada en los datos del usuario.
-    # Inicializa la lista de preguntas respondidas.  Esto es CRUCIAL.
-    context.user_data["answered_questions"] = [] 
+    context.user_data["answered_questions"] = []  # Inicializa la lista de preguntas respondidas.
 
+    # Notifica al usuario que la categoría ha sido seleccionada.
     await query.message.edit_text(f"📚 Has seleccionado la categoría: {category_name}. ¡Vamos a comenzar!")
-    await send_question(query.message, context)  # Envía la primera pregunta.
+    # Envía una pregunta aleatoria de la categoría seleccionada.
+    await send_question(query.message, context)
 
-# --- Función que envía una pregunta aleatoria de la categoría seleccionada ---
+# --- Función que envía una pregunta aleatoria ---
 async def send_question(message, context: ContextTypes.DEFAULT_TYPE):
-    category = context.user_data.get("category")
-    if not category:
+    category = context.user_data.get("category")  # Obtiene la categoría seleccionada.
+    if not category:  # Verifica que haya una categoría seleccionada.
         await message.reply_text("⚠️ No se ha seleccionado ninguna categoría.")
         return
 
-    questions = categories[category]
-    # Obtiene la lista de preguntas respondidas (o crea una lista vacía si no existe).
-    answered_questions = context.user_data.get("answered_questions", []) 
+    questions = categories[category]  # Obtiene las preguntas de la categoría seleccionada.
+    answered_questions = context.user_data.get("answered_questions", [])  # Obtiene las preguntas ya respondidas.
+    # Filtra las preguntas que aún no han sido respondidas.
     remaining_questions = [i for i in range(len(questions)) if i not in answered_questions]
 
-    if not remaining_questions:
+    if not remaining_questions:  # Si no quedan preguntas, felicita al usuario.
         await message.reply_text("🎉 ¡Has respondido todas las preguntas! 💪 ¡Gran trabajo!")
         return
 
+    # Selecciona una pregunta aleatoria de las restantes.
     question_index = random.choice(remaining_questions)
-    context.user_data["current_question"] = question_index
-    question_data = questions[question_index]
+    context.user_data["current_question"] = question_index  # Guarda el índice de la pregunta actual.
+    context.user_data["answered_questions"].append(question_index)  # Marca la pregunta como respondida.
+    question_data = questions[question_index]  # Obtiene los datos de la pregunta seleccionada.
 
+    # Prepara el texto de la pregunta y las opciones de respuesta.
     question_text = f"❓ {question_data['question']}"
     options = [f"{chr(65 + i)}. {option}" for i, option in enumerate(question_data["options"])]
+    # Crea un teclado con las opciones de respuesta.
     keyboard = [[InlineKeyboardButton(opt, callback_data=f"answer-{question_index}-{i}")] for i, opt in enumerate(options)]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
+    # Envía la pregunta y las opciones al usuario.
     await message.reply_text(f"{question_text}\n" + "\n".join(options), reply_markup=reply_markup)
 
-
-# --- Función que maneja la respuesta del usuario a una pregunta ---
+# --- Función que maneja la respuesta del usuario ---
 async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    query = update.callback_query  # Obtiene la consulta del usuario.
+    await query.answer()  # Confirma la recepción de la respuesta.
 
+    # Extrae el índice de la pregunta y la opción seleccionada.
     data = query.data.split("-")
     question_index, selected_option = int(data[1]), int(data[2])
-    category = context.user_data["category"]
-    question_data = categories[category][question_index]
-    correct_option = question_data["answer"]
+    category = context.user_data["category"]  # Obtiene la categoría seleccionada.
+    question_data = categories[category][question_index]  # Obtiene los datos de la pregunta.
+    correct_option = question_data["answer"]  # Obtiene la opción correcta.
 
-    # Agrega la pregunta respondida a la lista SOLO si no está ya allí.
-    if question_index not in context.user_data["answered_questions"]:
-        context.user_data["answered_questions"].append(question_index)
-
+    # Verifica si la respuesta es correcta o incorrecta.
     if selected_option == correct_option:
         await query.message.reply_text("✅ ¡Correcto!")
     else:
         correct_answer_text = question_data["options"][correct_option]
-        await query.message.reply_text(f"❌ Incorrecto. La respuesta correcta era: {correct_answer_text}")
+        await query.message.reply_text(f"❌ Incorrecto. La respuesta correcta era: {correct_answer_text}.")
 
-    keyboard = [
-        [InlineKeyboardButton("Sí", callback_data="continue-yes"), InlineKeyboardButton("No", callback_data="continue-no")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.message.reply_text("¿Deseas continuar?", reply_markup=reply_markup)
+    # Pide al usuario que escriba "sí" para continuar o "no" para finalizar.
+    await query.message.reply_text(
+        "¿Deseas continuar? Escribe 'Si' para regresar al menú de categorías o 'no' para finalizar."
+    )
 
+# --- Función que maneja la entrada de texto del usuario ---
+async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_input = update.message.text.strip().lower()  # Convierte la entrada a minúsculas.
 
-# --- Función que maneja la decisión del usuario de continuar o finalizar ---
-async def handle_continue(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    decision = query.data.split("-")[1]
-    if decision == "yes":
-        context.user_data.clear()
-        await start_exam(update, context)
-    elif decision == "no":
-        await query.message.reply_text("🎉 ¡Gracias por participar! 💡 Recuerda: ¡nunca dejes de aprender!")
+    if user_input in ["sí", "si"]:  # Si el usuario escribe "sí".
+        # Muestra el menú principal de categorías.
+        keyboard = [[InlineKeyboardButton(category, callback_data=f"category-{category}")] for category in categories]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "👋 Selecciona una nueva categoría para comenzar:",
+            reply_markup=reply_markup,
+        )
+    elif user_input == "no":  # Si el usuario escribe "no".
+        # Enviar un mensaje de despedida.
+        await update.message.reply_text("🎉 ¡Gracias por participar! 💡 ¡Sigue aprendiendo!.Recuerda: Los logros no son magia o surte, son esfuerzo y dedicación")
+    else:  # Si la entrada no es válida.
+        await update.message.reply_text("⚠️ Respuesta no válida. Escribe 'Sí' para regresar al menú o 'No' para finalizar.")
 
 
 # --- Configuración del bot ---
-app = ApplicationBuilder().token("7648845471:AAFY6FhamIAUUNkEPgqduZj12o7f6ZyNrew").build()  
-app.add_handler(CommandHandler("start", start_exam))
-app.add_handler(CallbackQueryHandler(handle_category_selection, pattern="^category-"))
-app.add_handler(CallbackQueryHandler(handle_answer, pattern="^answer-"))
-app.add_handler(CallbackQueryHandler(handle_continue, pattern="^continue-"))
+app = ApplicationBuilder().token("7648845471:AAFY6FhamIAUUNkEPgqduZj12o7f6ZyNrew").build()  # Reemplaza YOUR_BOT_TOKEN con tu token real.
+# Asocia los comandos y eventos con las funciones correspondientes.
+app.add_handler(CommandHandler("start", start_exam))  # Maneja el comando /start.
+app.add_handler(CallbackQueryHandler(handle_category_selection, pattern="^category-"))  # Maneja la selección de categoría.
+app.add_handler(CallbackQueryHandler(handle_answer, pattern="^answer-"))  # Maneja las respuestas a las preguntas.
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))  # Maneja entradas de texto del usuario.
 
 # --- Ejecuta el bot ---
 if __name__ == "__main__":
-    app.run_polling()
+    app.run_polling()  # Inicia el bot y espera interacciones.
